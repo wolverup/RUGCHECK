@@ -1,0 +1,1123 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="theme-color" content="#04040c">
+<title>RUGCHECK — The Wolf Sniffs Out Rugs</title>
+<meta name="description" content="Free open-source 3D token safety scanner. Honeypot simulation, mint detection, liquidity forensics. ETH, BSC, Base, Arbitrum, Polygon, Linea, Robinhood Chain, Solana.">
+<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700;900&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  :root {
+    --bg: #04040c;
+    --cyan: #00e5ff;
+    --magenta: #ff2ad4;
+    --purple: #9a4dff;
+    --green: #00ff9a;
+    --red: #ff3355;
+    --amber: #ffb020;
+    --text: #ffe14d;
+    --muted: #c2b65e;
+    --font-display: 'Orbitron', sans-serif;
+    --font-mono: 'JetBrains Mono', 'Share Tech Mono', monospace;
+  }
+  html { scroll-behavior: smooth; }
+  html, body { width: 100%; background: var(--bg); color: var(--text);
+    font-family: var(--font-mono); overflow-x: hidden; }
+  ::selection { background: var(--magenta); color: #000; }
+
+  /* ---------- layers ---------- */
+  #bg3d { position: fixed; inset: 0; z-index: 0; }
+  #content { position: relative; z-index: 10; font-weight: 500; }
+
+  /* ---------- scanlines + vignette ---------- */
+  body::after {
+    content: ''; position: fixed; inset: 0; z-index: 55; pointer-events: none;
+    background: repeating-linear-gradient(0deg, rgba(0,0,0,0.14) 0 1px, transparent 1px 3px);
+    mix-blend-mode: multiply;
+  }
+  body::before {
+    content: ''; position: fixed; inset: 0; z-index: 54; pointer-events: none;
+    background: radial-gradient(ellipse at center, transparent 55%, rgba(0,0,10,0.75) 100%);
+  }
+
+  /* ---------- custom cursor ---------- */
+  #cursor-dot { position: fixed; z-index: 200; width: 6px; height: 6px; border-radius: 50%;
+    background: #ffe14d; box-shadow: 0 0 8px #ffe14d; pointer-events: none;
+    transform: translate(-50%, -50%); }
+  #cursor-ring { position: fixed; z-index: 199; width: 34px; height: 34px; border-radius: 50%;
+    border: 1.5px solid rgba(255,225,77,0.55); pointer-events: none;
+    transform: translate(-50%, -50%); transition: width .18s, height .18s, border-color .18s; }
+  #cursor-ring.hot { width: 52px; height: 52px; border-color: var(--magenta); }
+  @media (pointer: coarse) { #cursor-dot, #cursor-ring { display: none; } }
+
+  /* ---------- boot ---------- */
+  #boot { position: fixed; inset: 0; z-index: 300; background: #02020a;
+    display: flex; align-items: center; justify-content: center; cursor: pointer; }
+  #boot-inner { width: min(640px, 90vw); font-size: 16px; line-height: 1.9; color: #ffe14d; }
+  #boot-inner .dim { color: #8a7d42; }
+  #boot-inner .cursor-blink { display: inline-block; width: 9px; height: 16px;
+    background: #ffe14d; animation: blink .7s steps(1) infinite; vertical-align: -2px; }
+  @keyframes blink { 50% { opacity: 0; } }
+  #boot.done { opacity: 0; pointer-events: none; transition: opacity .7s; }
+
+  /* ---------- nav ---------- */
+  .nav { position: fixed; top: 0; left: 0; right: 0; z-index: 50;
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 16px 28px; background: linear-gradient(180deg, rgba(4,4,14,0.85), transparent);
+    backdrop-filter: blur(6px); }
+  .nav-logo { font-family: var(--font-display); font-weight: 900; font-size: 18px;
+    letter-spacing: 3px; color: var(--text); text-decoration: none;
+    text-shadow: 0 0 14px rgba(255,225,77,0.7); }
+  .nav-logo span { color: var(--magenta); text-shadow: 0 0 14px rgba(255,42,212,0.7); }
+  .nav-links { display: flex; gap: 22px; align-items: center; }
+  .nav-links a { color: var(--muted); text-decoration: none; font-size: 13px;
+    letter-spacing: 3px; transition: color .15s, text-shadow .15s; }
+  .nav-links a:hover { color: #fff7c0; text-shadow: 0 0 10px rgba(255,225,77,0.8); }
+
+  /* ---------- hero ---------- */
+  .hero { min-height: 92vh; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; text-align: center; position: relative;
+    padding: 120px 20px 40px; }
+  .hero-kicker { font-size: 13px; letter-spacing: 6px; color: #ffb020;
+    text-shadow: 0 0 12px rgba(255,176,32,0.6); margin-bottom: 14px; }
+  .hero-name { font-family: var(--font-display); font-weight: 900;
+    font-size: clamp(44px, 9vw, 104px); letter-spacing: 10px; line-height: 1;
+    background: linear-gradient(120deg, #ffe14d 30%, #fff9c4 50%, #ffb020 80%);
+    -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
+    filter: drop-shadow(0 0 26px rgba(255,225,77,0.45)); }
+  .hero-sub { margin-top: 16px; font-size: clamp(12px, 1.8vw, 17px); letter-spacing: 5px; color: var(--text); }
+  .hero-sub b { color: #fff7c0; font-weight: 400; }
+  .hero-tag { margin-top: 26px; font-size: 14px; color: var(--muted); max-width: 600px;
+    line-height: 1.9; }
+  .chains-row { display: flex; justify-content: center; gap: 8px; flex-wrap: wrap; margin-top: 24px; }
+  .chains-row span { font-size: 12px; letter-spacing: 2px; color: var(--muted);
+    border: 1px solid rgba(0,229,255,0.25); border-radius: 20px; padding: 5px 13px; }
+  .chains-row span.on { color: #fff7c0; border-color: rgba(255,225,77,0.6);
+    text-shadow: 0 0 8px rgba(255,225,77,0.6); }
+  .scroll-hint { position: absolute; bottom: 26px; left: 50%; transform: translateX(-50%);
+    color: var(--muted); font-size: 11px; letter-spacing: 4px; }
+  .scroll-hint::after { content: ''; display: block; width: 1px; height: 34px;
+    background: linear-gradient(#ffe14d, transparent); margin: 8px auto 0;
+    animation: drip 1.6s ease-in-out infinite; }
+  @keyframes drip { 0% { opacity: 0; transform: scaleY(0); } 45% { opacity: 1; }
+    100% { opacity: 0; transform: scaleY(1); transform-origin: top; } }
+
+  /* ---------- scanner console ---------- */
+  .console-wrap { max-width: 780px; margin: 0 auto; padding: 0 20px 30px; position: relative; }
+  .console { background: linear-gradient(160deg, rgba(10,14,34,0.92), rgba(6,6,18,0.95));
+    border: 1px solid rgba(0,229,255,0.25); border-radius: 14px; padding: 26px;
+    box-shadow: 0 24px 70px rgba(0,0,0,0.5), 0 0 40px rgba(0,229,255,0.07); }
+  .console .k { font-size: 11.5px; letter-spacing: 4px; color: #ffb020; margin-bottom: 16px; }
+  .chain-row { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; }
+  .chain-btn { background: transparent; border: 1px solid rgba(0,229,255,0.3); color: var(--muted);
+    font-family: var(--font-mono); font-size: 13px; letter-spacing: 2px; padding: 7px 13px;
+    border-radius: 6px; cursor: pointer; transition: .15s; }
+  .chain-btn:hover { border-color: #ffe14d; color: #fff7c0; }
+  .chain-btn.sel { background: rgba(255,225,77,0.1); border-color: #ffe14d; color: #ffe14d;
+    text-shadow: 0 0 8px rgba(255,225,77,0.6); box-shadow: inset 0 0 14px rgba(255,225,77,0.12); }
+  .chain-btn.sel[data-chain="sol"] { border-color: var(--purple); color: var(--purple);
+    background: rgba(154,77,255,0.12); text-shadow: 0 0 8px rgba(154,77,255,0.6); }
+  .addr-row { display: flex; gap: 12px; }
+  .addr-row input { flex: 1; min-width: 0; background: rgba(2,4,12,0.8);
+    border: 1px solid rgba(0,229,255,0.3); border-radius: 8px; color: var(--text);
+    font-family: var(--font-mono); font-size: 16px; padding: 14px 16px; letter-spacing: .5px; }
+  .addr-row input::placeholder { color: #8a7d42; }
+  .addr-row input:focus { outline: none; border-color: #ffe14d;
+    box-shadow: 0 0 20px rgba(255,225,77,0.2); }
+  .sniff-btn { background: #ffe14d; color: #0f0c00; border: none; border-radius: 8px;
+    font-family: var(--font-display); font-weight: 700; font-size: 14px; letter-spacing: 3px;
+    padding: 0 26px; cursor: pointer; white-space: nowrap;
+    box-shadow: 0 0 24px rgba(255,225,77,0.5), inset 0 0 0 1px rgba(255,255,255,0.25); transition: .15s; }
+  .sniff-btn:hover { box-shadow: 0 0 40px rgba(255,225,77,0.85); }
+  .sniff-btn:disabled { opacity: .5; cursor: wait; }
+  .err { color: var(--red); font-size: 13.5px; margin-top: 12px; display: none;
+    text-shadow: 0 0 10px rgba(255,51,85,0.5); }
+  .hint { margin-top: 14px; font-size: 11.5px; letter-spacing: 3px; color: var(--muted); text-align: center; }
+
+  /* ---------- live terminal ---------- */
+  .term-wrap { max-width: 780px; margin: 22px auto 0; padding: 0 20px; display: none; }
+  .term { background: rgba(1,3,9,0.92); border: 1px solid rgba(0,255,154,0.3); border-radius: 10px;
+    padding: 18px 22px; font-size: 14.5px; line-height: 2; min-height: 100px;
+    box-shadow: 0 0 30px rgba(0,255,154,0.07); }
+  .term .tline { color: var(--muted); white-space: pre-wrap; word-break: break-all; }
+  .term .tline b { color: #fff7c0; font-weight: 400; }
+  .term .tline.ok { color: var(--green); text-shadow: 0 0 8px rgba(0,255,154,0.4); }
+  .term .tline.warnred { color: var(--red); text-shadow: 0 0 8px rgba(255,51,85,0.4); }
+  .term .cursor { display: inline-block; width: 9px; height: 15px; background: var(--green);
+    vertical-align: -2px; animation: blink 1.1s steps(1) infinite; margin-left: 2px; }
+
+  /* ---------- report ---------- */
+  .report { max-width: 880px; margin: 40px auto 0; padding: 0 20px; display: none; }
+  .rep-card { background: linear-gradient(160deg, rgba(10,14,34,0.94), rgba(6,6,18,0.96));
+    border: 1px solid rgba(0,229,255,0.25); border-radius: 16px; overflow: hidden;
+    box-shadow: 0 30px 80px rgba(0,0,0,0.55), 0 0 50px rgba(0,229,255,0.08); }
+  .rep-head { display: flex; gap: 18px; align-items: center; padding: 28px; flex-wrap: wrap;
+    border-bottom: 1px solid rgba(0,229,255,0.18); }
+  .rep-head img { width: 56px; height: 56px; border-radius: 50%;
+    border: 1px solid rgba(0,229,255,0.5); object-fit: cover; background: rgba(8,10,26,0.8); }
+  .rep-head .noimg { width: 56px; height: 56px; border-radius: 50%;
+    border: 1px solid rgba(0,229,255,0.5); background: rgba(8,10,26,0.8);
+    display: flex; align-items: center; justify-content: center; font-size: 26px; }
+  .rep-id { flex: 1; min-width: 220px; }
+  .rep-id .exh { font-size: 11px; letter-spacing: 4px; color: var(--magenta); }
+  .rep-id h2 { font-family: var(--font-display); font-size: clamp(21px, 3.4vw, 28px);
+    letter-spacing: 2px; color: #ffe14d; margin-top: 4px;
+    text-shadow: 0 0 16px rgba(255,225,77,0.5); }
+  .rep-id h2 span { color: var(--muted); text-shadow: none; }
+  .rep-id .sub { font-size: 12.5px; color: var(--muted); margin-top: 6px; word-break: break-all; }
+  .rep-id .sub a { color: #ffe14d; text-decoration: none; border-bottom: 1px dotted #ffe14d; }
+
+  .verdict { font-family: var(--font-display); font-weight: 900; text-align: center;
+    padding: 14px 24px; min-width: 190px; border: 2px solid; border-radius: 8px;
+    font-size: 19px; letter-spacing: 3px; animation: slam .3s cubic-bezier(.2,2.6,.4,1); }
+  @keyframes slam { 0% { transform: scale(2); opacity: 0; } 100% { transform: scale(1); opacity: 1; } }
+  .verdict small { display: block; font-family: var(--font-mono); font-size: 10px;
+    letter-spacing: 4px; font-weight: 400; margin-bottom: 4px; opacity: .7; }
+  .verdict.safe { color: var(--green); border-color: var(--green);
+    background: rgba(0,255,154,0.07); text-shadow: 0 0 18px rgba(0,255,154,0.7);
+    box-shadow: 0 0 30px rgba(0,255,154,0.25); }
+  .verdict.caution { color: var(--amber); border-color: var(--amber);
+    background: rgba(255,176,32,0.07); text-shadow: 0 0 18px rgba(255,176,32,0.7);
+    box-shadow: 0 0 30px rgba(255,176,32,0.25); }
+  .verdict.danger { color: var(--red); border-color: var(--red);
+    background: rgba(255,51,85,0.08); text-shadow: 0 0 18px rgba(255,51,85,0.8);
+    box-shadow: 0 0 34px rgba(255,51,85,0.3); animation: slam .3s cubic-bezier(.2,2.6,.4,1), tremble .45s ease .35s; }
+  @keyframes tremble { 0%,100% { transform: none; } 30% { transform: translate(-2px,1px); }
+    60% { transform: translate(2px,-1px); } }
+
+  .sysnote { padding: 14px 28px; font-size: 13.5px; color: var(--muted);
+    border-bottom: 1px solid rgba(0,229,255,0.12); letter-spacing: 1px; }
+  .sysnote b { color: #ffb020; font-weight: 400; }
+
+  .threat { padding: 20px 28px; display: flex; align-items: center; gap: 18px; flex-wrap: wrap;
+    border-bottom: 1px solid rgba(0,229,255,0.12); }
+  .threat .lbl { font-size: 11px; letter-spacing: 4px; color: var(--muted); }
+  .threat .num { font-family: var(--font-display); font-weight: 900; font-size: 28px; min-width: 70px; }
+  .risk-track { flex: 1; min-width: 170px; height: 10px; border: 1px solid rgba(0,229,255,0.35);
+    border-radius: 99px; overflow: hidden; background: rgba(2,4,12,0.9); }
+  .risk-fill { height: 100%; width: 0%; transition: width 1s cubic-bezier(.2,.8,.2,1); border-radius: 99px; }
+  .risk-fill.safe { background: linear-gradient(90deg, #0a5f3c, var(--green));
+    box-shadow: 0 0 14px rgba(0,255,154,0.6); }
+  .risk-fill.caution { background: linear-gradient(90deg, #7a4d0a, var(--amber));
+    box-shadow: 0 0 14px rgba(255,176,32,0.6); }
+  .risk-fill.danger { background: linear-gradient(90deg, #6b1425, var(--red));
+    box-shadow: 0 0 14px rgba(255,51,85,0.6); }
+
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 14px;
+    padding: 20px 28px; border-bottom: 1px solid rgba(0,229,255,0.12); }
+  .stat { text-align: center; padding: 16px 10px; border: 1px solid rgba(0,229,255,0.16);
+    border-radius: 10px; background: rgba(8,10,26,0.6); }
+  .stat .k { font-size: 10.5px; letter-spacing: 3px; color: var(--muted); margin-bottom: 6px; }
+  .stat .v { font-family: var(--font-display); font-weight: 700; font-size: 16.5px; color: #ffe14d; word-break: break-all; }
+
+  .checks { padding: 10px 28px 26px; }
+  .ck-group { margin-top: 18px; }
+  .ck-group h3 { font-size: 11.5px; letter-spacing: 5px; color: #ffb020; margin-bottom: 10px; }
+  .ck { display: flex; gap: 14px; align-items: flex-start; padding: 13px 15px;
+    border: 1px solid rgba(0,229,255,0.14); border-radius: 10px; margin-bottom: 8px;
+    background: rgba(8,10,26,0.55); transition: border-color .15s; }
+  .ck:hover { border-color: rgba(0,229,255,0.45); }
+  .ck .badge { flex-shrink: 0; font-size: 11px; font-weight: 700; letter-spacing: 2px;
+    border-radius: 5px; padding: 4px 9px; font-family: var(--font-display); margin-top: 2px; }
+  .ck.pass .badge { color: #011016; background: var(--green); box-shadow: 0 0 14px rgba(0,255,154,0.5); }
+  .ck.warn .badge { color: #1a1000; background: var(--amber); box-shadow: 0 0 14px rgba(255,176,32,0.5); }
+  .ck.fail .badge { color: #fff; background: var(--red); box-shadow: 0 0 14px rgba(255,51,85,0.5); }
+  .ck.info .badge { color: var(--text); background: rgba(0,229,255,0.15);
+    border: 1px solid rgba(0,229,255,0.4); }
+  .ck .body { flex: 1; min-width: 0; }
+  .ck .t { font-size: 15px; color: var(--text); }
+  .ck.fail .t { color: #ffb3c2; }
+  .ck .d { font-size: 13.5px; color: var(--muted); margin-top: 3px; line-height: 1.7; }
+  .ck .d code { color: #fff7c0; background: rgba(255,225,77,0.08); padding: 1px 5px;
+    border-radius: 4px; word-break: break-all; font-size: 12px; }
+
+  .acts { display: flex; gap: 12px; padding: 20px 28px 12px; flex-wrap: wrap; }
+  .act-btn { background: transparent; border: 1px solid rgba(255,225,77,0.5); color: #ffe14d;
+    font-family: var(--font-mono); font-size: 13px; letter-spacing: 2px; padding: 11px 18px;
+    border-radius: 8px; cursor: pointer; transition: .15s; }
+  .act-btn:hover { background: rgba(255,225,77,0.1); box-shadow: 0 0 20px rgba(255,225,77,0.25); }
+  .act-btn.primary { border-color: var(--magenta); color: var(--magenta); }
+  .act-btn.primary:hover { background: rgba(255,42,212,0.1); box-shadow: 0 0 20px rgba(255,42,212,0.3); }
+  .note { padding: 6px 28px 26px; color: var(--muted); font-size: 12px; letter-spacing: 1px; line-height: 1.9; }
+
+  footer { margin-top: 80px; text-align: center; padding: 40px 20px 56px;
+    border-top: 1px solid rgba(0,229,255,0.12); color: var(--muted);
+    font-size: 12.5px; letter-spacing: 2px; line-height: 2.2; }
+  footer .fw { font-size: 22px; }
+  footer .fwt { font-family: var(--font-display); color: #ffe14d; letter-spacing: 4px;
+    font-size: 13px; margin: 10px 0 4px; text-shadow: 0 0 12px rgba(255,225,77,0.5); }
+  .donate { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; margin: 20px 0; }
+  .don { background: rgba(8,10,26,0.7); border: 1px solid rgba(0,229,255,0.25); border-radius: 10px;
+    padding: 11px 16px; cursor: pointer; transition: .15s; text-align: left; }
+  .don:hover { border-color: var(--magenta); box-shadow: 0 0 24px rgba(255,42,212,0.2); }
+  .don .c { font-size: 11px; letter-spacing: 3px; color: #ffb020; }
+  .don .a { font-size: 11.5px; color: var(--text); margin-top: 4px; max-width: 190px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  footer .flinks { margin-top: 14px; }
+  footer .flinks a { color: var(--muted); text-decoration: none; margin: 0 12px; letter-spacing: 3px; }
+  footer .flinks a:hover { color: #ffe14d; }
+  footer .oss { color: #45507a; font-size: 9.5px; margin-top: 16px; letter-spacing: 2px; }
+
+  .toast { position: fixed; bottom: 24px; right: 24px; z-index: 210;
+    background: rgba(6,8,22,0.95); border: 1px solid #ffe14d; color: var(--text);
+    padding: 14px 20px; border-radius: 10px; font-size: 14px;
+    box-shadow: 0 0 30px rgba(255,225,77,0.25); transform: translateY(120px); opacity: 0; transition: .3s;
+    max-width: 320px; }
+  .toast.show { transform: none; opacity: 1; }
+
+  @media (max-width: 640px) {
+    .addr-row { flex-direction: column; }
+    .sniff-btn { padding: 14px; }
+    .console, .rep-card { border-radius: 10px; }
+    .rep-head, .threat, .stats, .checks, .acts, .note { padding-left: 16px; padding-right: 16px; }
+    .verdict { min-width: 150px; font-size: 14px; }
+    .nav { padding: 12px 16px; }
+  }
+</style>
+</head>
+<body>
+
+<canvas id="bg3d"></canvas>
+<div id="cursor-dot"></div>
+<div id="cursor-ring"></div>
+
+<div id="boot">
+  <div id="boot-inner"></div>
+</div>
+
+<nav class="nav">
+  <a class="nav-logo" href="#">RUG<span>CHECK</span></a>
+  <div class="nav-links">
+    <a href="https://x.com/WOLVup" target="_blank" rel="noopener">X / @WOLVup</a>
+    <a href="https://t.me/WOLV090" target="_blank" rel="noopener">TELEGRAM</a>
+  </div>
+</nav>
+
+<div id="content">
+
+  <section class="hero">
+    <div class="hero-kicker">FREE · OPEN SOURCE · NO API KEYS</div>
+    <div class="hero-name">RUGCHECK</div>
+    <div class="hero-sub">THE WOLF SNIFFS OUT <b>RUGS</b></div>
+    <p class="hero-tag">Paste any token contract. Live honeypot simulation, on-chain mint detection, liquidity forensics, pool age and holder concentration — before you apе.</p>
+    <div class="chains-row">
+      <span class="on">ETH ★</span><span class="on">BSC ★</span><span class="on">BASE ★</span>
+      <span>ARBITRUM</span><span>POLYGON</span><span>LINEA</span><span>ROBINHOOD</span><span>SOLANA</span>
+    </div>
+    <div class="scroll-hint">SCAN</div>
+  </section>
+
+  <section class="console-wrap">
+    <div class="console">
+      <div class="k">// TARGET INPUT</div>
+      <div class="chain-row" id="chainRow">
+        <button class="chain-btn sel" data-chain="auto">AUTO</button>
+        <button class="chain-btn" data-chain="eth">ETH ★</button>
+        <button class="chain-btn" data-chain="bsc">BSC ★</button>
+        <button class="chain-btn" data-chain="base">BASE ★</button>
+        <button class="chain-btn" data-chain="arb">ARB</button>
+        <button class="chain-btn" data-chain="poly">POLY</button>
+        <button class="chain-btn" data-chain="linea">LINEA</button>
+        <button class="chain-btn" data-chain="rh">RH</button>
+        <button class="chain-btn" data-chain="sol">SOLANA</button>
+      </div>
+      <div class="addr-row">
+        <input id="addr" type="text" spellcheck="false" autocomplete="off"
+          placeholder="paste token contract or mint address…">
+        <button class="sniff-btn" id="sniffBtn" onclick="startScan()">SNIFF IT</button>
+      </div>
+      <div class="err" id="err"></div>
+      <div class="hint">★ = FULL SIMULATION · NOTHING STORED · NO ACCOUNTS · RUNS 100% IN YOUR BROWSER</div>
+    </div>
+  </section>
+
+  <section class="term-wrap" id="term">
+    <div class="term" id="termBox"></div>
+  </section>
+
+  <section class="report" id="report"></section>
+
+  <footer>
+    <div class="fw">🐺</div>
+    <div class="fwt">FEED THE WOLF</div>
+    RUGCHECK is free forever. If it saved your bags, leave a tip:
+    <div class="donate">
+      <div class="don" onclick="copyAddr('eth')"><div class="c">ETH</div><div class="a">0xe0607011cAcA35CB9E941394cE2dc89a29F007d8</div></div>
+      <div class="don" onclick="copyAddr('btc')"><div class="c">BTC</div><div class="a">bc1qap48ulej43fj2r6wl60c7afdquuy8tples60w8</div></div>
+      <div class="don" onclick="copyAddr('sol')"><div class="c">SOL</div><div class="a">Ag6HXiyNwRPnCfaDXxAxSz8YvxFqS7hs58BkbUe2UVcZ</div></div>
+    </div>
+    <div class="flinks">
+      <a href="https://x.com/WOLVup" target="_blank" rel="noopener">X / TWITTER</a>
+      <a href="https://t.me/WOLV090" target="_blank" rel="noopener">TELEGRAM</a>
+    </div>
+    <div class="oss">OPEN SOURCE · MIT · SOURCES: HONEYPOT.IS · DEXSCREENER.COM · PUBLICNODE.COM<br>
+    NOT FINANCIAL ADVICE — THE WOLF REPORTS WHAT HE SMELLS, YOU DECIDE WHAT TO APЕ.</div>
+  </footer>
+
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+'use strict';
+// ================= RUGCHECK.EXE — engine =================
+// Free, keyless, client-side token safety scanner.
+// Data: honeypot.is (deep sim) · DexScreener (pairs) · PublicNode RPCs (owner / mint / authority)
+
+const DONATE = {
+  eth:'0xe0607011cAcA35CB9E941394cE2dc89a29F007d8',
+  btc:'bc1qap48ulej43fj2r6wl60c7afdquuy8tples60w8',
+  sol:'Ag6HXiyNwRPnCfaDXxAxSz8YvxFqS7hs58BkbUe2UVcZ'
+};
+
+const CHAINS = {
+  eth:  {name:'Ethereum', dex:'ethereum', rpc:'https://ethereum-rpc.publicnode.com', hp:1,     style:'ETH'},
+  bsc:  {name:'BNB Chain', dex:'bsc',     rpc:'https://bsc-rpc.publicnode.com',      hp:56,    style:'BSC'},
+  base: {name:'Base',      dex:'base',    rpc:'https://base-rpc.publicnode.com',     hp:8453,  style:'BASE'},
+  arb:  {name:'Arbitrum',  dex:'arbitrum',rpc:'https://arbitrum-rpc.publicnode.com', hp:null,  style:'ARB'},
+  poly: {name:'Polygon',   dex:'polygon', rpc:'https://polygon-bor-rpc.publicnode.com',hp:null, style:'POLY'},
+  linea:{name:'Linea',     dex:'linea',   rpc:'https://linea-rpc.publicnode.com',    hp:null,  style:'LINEA'},
+  rh:   {name:'Robinhood Chain', dex:'robinhood', rpc:'https://rpc.mainnet.chain.robinhood.com', hp:null, style:'RH'},
+  sol:  {name:'Solana',    dex:'solana',  rpc:'https://solana-rpc.publicnode.com',   hp:null,  style:'SOL'}
+};
+const SOL_RPC = 'https://solana-rpc.publicnode.com';
+
+let selectedChain = 'auto';
+let lastReport = null;
+
+// ---------- helpers ----------
+const $ = id => document.getElementById(id);
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const short = a => a && a.length > 14 ? a.slice(0,8) + '…' + a.slice(-6) : (a || '');
+const fmtUsd = n => {
+  if (n == null || isNaN(n)) return '—';
+  if (n >= 1e9) return '$' + (n/1e9).toFixed(2) + 'B';
+  if (n >= 1e6) return '$' + (n/1e6).toFixed(2) + 'M';
+  if (n >= 1e3) return '$' + (n/1e3).toFixed(1) + 'K';
+  return '$' + n.toFixed(0);
+};
+const fmtAge = ms => {
+  if (!ms) return '—';
+  const d = (Date.now() - ms) / 86400000;
+  if (d < 1/24) return Math.max(1,Math.round(d*24*60)) + ' min';
+  if (d < 1) return Math.round(d*24) + 'h';
+  if (d < 365) return d < 14 ? Math.round(d) + ' days' : (d/30.44).toFixed(1) + ' months';
+  return (d/365.25).toFixed(1) + ' years';
+};
+const fmtNum = n => n == null ? '—' : n.toLocaleString('en-US');
+
+function coreState(s) { try { window.__coreState && window.__coreState(s); } catch (e) {} }
+
+function showToast(msg) {
+  const t = $('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  clearTimeout(t._h);
+  t._h = setTimeout(() => t.classList.remove('show'), 3200);
+}
+function copyAddr(k) {
+  navigator.clipboard.writeText(DONATE[k]).then(
+    () => showToast(k.toUpperCase() + ' donation address copied — thank you 🐺'),
+    () => showToast('copy failed', true)
+  );
+}
+
+// terminal printer
+async function tline(html, cls) {
+  const box = $('termBox');
+  const div = document.createElement('div');
+  div.className = 'tline' + (cls ? ' ' + cls : '');
+  div.innerHTML = '> ' + html;
+  box.appendChild(div);
+  box.scrollTop = box.scrollHeight;
+  await sleep(90 + Math.random()*160);
+}
+
+// ---------- address / chain detection ----------
+const isEvm = a => /^0x[a-fA-F0-9]{40}$/.test(a);
+const isSol = a => /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(a) && !a.startsWith('0x');
+
+function detectChain(addr) {
+  if (selectedChain !== 'auto') return selectedChain;
+  if (isEvm(addr)) return 'eth';           // default EVM = Ethereum; user can override
+  if (isSol(addr)) return 'sol';
+  return null;
+}
+
+// ---------- fetchers (with timeout + retry) ----------
+async function jfetch(url, opts, timeoutMs) {
+  const ctrl = new AbortController();
+  const to = setTimeout(() => ctrl.abort(), timeoutMs || 15000);
+  try {
+    const r = await fetch(url, {...(opts||{}), signal: ctrl.signal});
+    const j = await r.json().catch(() => { throw new Error('bad json'); });
+    return {status: r.status, ok: r.ok, json: j};
+  } finally { clearTimeout(to); }
+}
+async function rpcCall(url, method, params, tries, timeoutMs) {
+  tries = tries || 2;
+  for (let i = 0; i < tries; i++) {
+    try {
+      const r = await jfetch(url, {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({jsonrpc:'2.0', id:1, method, params})
+      }, timeoutMs || 12000);
+      if (r.ok && r.json && !r.json.error) return r.json.result;
+    } catch (e) { /* aborted / network error — retry, never crash the scan */ }
+    if (i < tries-1) await sleep(1100);
+  }
+  return null;
+}
+
+async function fetchDex(chainKey, addr) {
+  // chain-scoped v1 endpoint — the generic /latest/dex/tokens lookup can return
+  // fork-chain pairs only (e.g. pulsechain shares EVM addresses)
+  try {
+    const r = await jfetch('https://api.dexscreener.com/tokens/v1/' + CHAINS[chainKey].dex + '/' + addr, null, 15000);
+    if (!r.ok || !Array.isArray(r.json) || !r.json.length) return null;
+    const mine = r.json.filter(p => p.chainId === CHAINS[chainKey].dex);
+    mine.sort((a,b) => (b.liquidity?.usd || 0) - (a.liquidity?.usd || 0));
+    return mine[0] || null;
+  } catch (e) { return null; }
+}
+
+async function fetchHoneypot(chainKey, addr) {
+  const cid = CHAINS[chainKey].hp;
+  if (!cid) return null;
+  try {
+    const r = await jfetch('https://api.honeypot.is/v2/IsHoneypot?address=' + addr + '&chainID=' + cid, null, 25000);
+    if (!r.ok || !r.json || r.json.code) return null;
+    return r.json;
+  } catch (e) { return null; }
+}
+
+// EVM owner() / getOwner() via RPC → renounced?
+async function evmOwnerStatus(chainKey, addr) {
+  const url = CHAINS[chainKey].rpc;
+  const ownerSel = '0x8da5cb5b';    // owner()
+  const getOwnerSel = '0x893d20e8'; // getOwner()
+  let res = await rpcCall(url, 'eth_call', [{to: addr, data: ownerSel}, 'latest']);
+  if (res === null) res = await rpcCall(url, 'eth_call', [{to: addr, data: getOwnerSel}, 'latest']);
+  if (res === null) return {state:'unknown'};   // both reverted / rpc failed
+  const hex = res || '';
+  // empty/short return (fallback-swallowed call, e.g. WETH) = no information,
+  // NOT renounced
+  if (!hex || hex === '0x' || hex.length < 66) return {state:'unknown'};
+  const addrFromHex = '0x' + hex.slice(-40);
+  if (/^0x0+$/.test(addrFromHex) || addrFromHex.toLowerCase() === addr.toLowerCase())
+    return {state:'renounced'};
+  return {state:'owned', owner: addrFromHex};
+}
+
+// EVM mint-function simulation: try common mint() selectors from `fromAddr`.
+// eth_call success = that address can mint right now. Revert = blocked (or a
+// signature we didn't try — absence of evidence, not proof of safety).
+async function evmMintCheck(chainKey, token, fromAddr) {
+  if (!fromAddr) return null;
+  const url = CHAINS[chainKey].rpc;
+  const one = '0000000000000000000000000000000000000000000000000000000000000001';
+  const zeroAddr = '0000000000000000000000000000000000000001'.padStart(64, '0');
+  const calls = [
+    '0x40c10f19' + zeroAddr + one,  // mint(address,uint256)
+    '0x1249c58b',                   // mint()
+    '0xa0712d68' + one              // mint(uint256)
+  ];
+  for (const data of calls) {
+    await sleep(400);
+    const res = await rpcCall(url, 'eth_call', [{from: fromAddr, to: token, data}, 'latest'], 1, 8000);
+    if (res && typeof res === 'string' && res !== '0x' && res.length >= 2) return true;
+  }
+  return false;
+}
+
+// Solana mint checks
+async function solMintInfo(addr) {
+  const v = await rpcCall(SOL_RPC, 'getAccountInfo', [addr, {encoding:'jsonParsed'}]);
+  if (!v || !v.value || !v.value.data || !v.value.data.parsed) return null;
+  const info = v.value.data.parsed.info || {};
+  return {
+    mintAuthority: info.mintAuthority || null,   // null = renounced ✅
+    freezeAuthority: info.freezeAuthority || null, // null = no freeze ✅
+    supply: info.supply || null,
+    decimals: info.decimals
+  };
+}
+async function solTopHolders(addr, supplyUi) {
+  await sleep(1000); // be gentle with publicnode rate limits
+  const v = await rpcCall(SOL_RPC, 'getTokenLargestAccounts', [addr], 2, 6000);
+  if (!v || !v.value || !Array.isArray(v.value) || !supplyUi) return null;
+  const top = v.value.slice(0, 10).reduce((s, h) => s + (h.uiAmount || 0), 0);
+  return Math.min(100, (top / supplyUi) * 100);
+}
+
+// ---------- risk model ----------
+// returns {checks:[], score, verdict}
+function buildReport(data) {
+  const checks = [];
+  let score = 0;
+  const add = (group, status, title, desc) => checks.push({group, status, title, desc});
+  const bump = pts => { score = Math.min(100, score + pts); };
+
+  const d = data; // {chainKey, addr, hp, dex, owner, sol, mint}
+
+  // ============ TRADE ============
+  if (d.hp) {
+    const honeypot = !!(d.hp.honeypotResult && d.hp.honeypotResult.isHoneypot);
+    if (honeypot) {
+      bump(60);
+      add('TRADE','fail','Honeypot detected','Buy simulation succeeded but <b>SELL failed</b>. You can buy in — you can never get out. This is a 100% rug signature.');
+    } else {
+      add('TRADE','pass','Not a honeypot','Buy AND sell simulations both succeeded — you can exit your position.');
+    }
+    const sim = d.hp.simulationResult || {};
+    // honeypot.is reports -1 taxes when simulation fails — treat as unknown
+    const sellTax = Number(sim.sellTax), buyTax = Number(sim.buyTax);
+    const xTax = Number(sim.transferTax);
+    if (!isNaN(sellTax) && sellTax >= 0) {
+      if (sellTax > 30) { bump(30); add('TRADE','fail','Sell tax '+sellTax+'%','Extremely high — you lose '+sellTax+'% the instant you sell. Classic slow-rug drain.'); }
+      else if (sellTax > 10) { bump(15); add('TRADE','warn','Sell tax '+sellTax+'%','High sell tax. Every exit costs you '+sellTax+'%.'); }
+      else add('TRADE','pass','Sell tax '+sellTax+'%','Low or zero sell tax.');
+    }
+    if (!isNaN(buyTax) && buyTax >= 0) {
+      if (buyTax > 30) { bump(20); add('TRADE','fail','Buy tax '+buyTax+'%','You instantly lose '+buyTax+'% on every buy.'); }
+      else if (buyTax > 10) { bump(8); add('TRADE','warn','Buy tax '+buyTax+'%','Elevated buy tax.'); }
+      else add('TRADE','pass','Buy tax '+buyTax+'%','Low or zero buy tax.');
+    }
+    if (!isNaN(xTax) && xTax > 10) { bump(10); add('TRADE','warn','Transfer tax '+xTax+'%','Moving the token between wallets costs '+xTax+'%.'); }
+
+    // tax flags are already scored above — don't double-count them
+    const flags = (d.hp.summary && Array.isArray(d.hp.summary.flags) ? d.hp.summary.flags : []);
+    flags.forEach(f => {
+      const fs = String(f);
+      if (/tax/i.test(fs)) return;
+      bump(8); add('TRADE','warn','Scanner flag', esc(fs));
+    });
+
+    const code = d.hp.contractCode || {};
+    if (code.openSource === false) { bump(12); add('CONTRACT','fail','Contract not verified','Source code is hidden. Nobody can audit what the owner can do to you.'); }
+    else add('CONTRACT','pass','Contract verified','Source code is public and verified — auditable.');
+    if (code.isProxy) { bump(10); add('CONTRACT','warn','Proxy contract','Logic can be swapped by the proxy admin after you buy.'); }
+    if (code.hasProxyCalls) { bump(8); add('CONTRACT','warn','Hidden delegate calls','Contract can execute hidden logic from other contracts.'); }
+
+    const holders = d.hp.token && d.hp.token.totalHolders;
+    if (holders != null) {
+      if (holders < 50) { bump(12); add('HOLDERS','warn','Only ' + fmtNum(holders) + ' holders','Very few holders — low trust, easy to manipulate.'); }
+      else add('HOLDERS','pass', fmtNum(holders) + ' holders', 'Healthy holder base.');
+    }
+  } else if (d.chainKey !== 'sol') {
+    add('TRADE','info','Deep simulation not available','Honeypot/tax simulation covers ETH, BSC and Base. For this chain the wolf checks owner, mint, liquidity and pool age only — extra caution advised.');
+  }
+
+  // ============ CONTRACT / AUTHORITY ============
+  if (d.chainKey === 'sol') {
+    // major established issuers (regulated stablecoins etc.) legitimately keep
+    // authorities — don't read that as a rug when the token is a giant
+    const bigCap =
+      (d.dex && Math.max(d.dex.marketCap || 0, d.dex.fdv || 0) > 1e9) ||
+      (d.dex && d.dex.pairCreatedAt && (Date.now() - d.dex.pairCreatedAt) / 86400000 > 365);
+    let solPen = 0;
+    const solBump = pts => { solPen += pts; bump(pts); };
+    if (d.sol) {
+      if (d.sol.mintAuthority) {
+        if (bigCap) { solBump(10); add('CONTRACT','warn','Mint authority active (major issuer)','Authority: <code>' + short(d.sol.mintAuthority) + '</code>. Large established issuer — authority is expected here, not a rug signature by itself.'); }
+        else { solBump(25); add('CONTRACT','fail','Mint authority ACTIVE','Owner can mint unlimited new tokens anytime — instant dilution rug. Authority: <code>' + short(d.sol.mintAuthority) + '</code>'); }
+      } else add('CONTRACT','pass','Mint authority renounced','Nobody can print more supply. What exists is all there will ever be.');
+      if (d.sol.freezeAuthority) {
+        if (bigCap) { solBump(8); add('CONTRACT','warn','Freeze authority active (major issuer)','Authority: <code>' + short(d.sol.freezeAuthority) + '</code>. Expected for regulated issuers — unusual for anything else.'); }
+        else { solBump(20); add('CONTRACT','fail','Freeze authority ACTIVE','Owner can freeze your token account — you would be unable to sell. Authority: <code>' + short(d.sol.freezeAuthority) + '</code>'); }
+      } else add('CONTRACT','pass','No freeze authority','Your account cannot be frozen by the token owner.');
+    } else {
+      bump(15);
+      add('CONTRACT','warn','Could not read mint data','RPC did not return mint info. Treat as unknown risk.');
+    }
+    if (d.top10 != null) {
+      // pool/vault program accounts inflate top-10 — read with judgment
+      if (d.top10 > 60) solBump(18), add('HOLDERS','fail','Top-10 hold ' + d.top10.toFixed(1) + '%','Top wallets control most supply — a coordinated dump nukes the chart. (Program & pool vaults can inflate this number.)');
+      else if (d.top10 > 35) solBump(8), add('HOLDERS','warn','Top-10 hold ' + d.top10.toFixed(1) + '%','Concentrated holdings. (Program & pool vaults can inflate this number.)');
+      else add('HOLDERS','pass','Top-10 hold ' + d.top10.toFixed(1) + '%','Well-distributed supply.');
+    }
+    // the three authority/holder signals together can't exceed 45
+    if (solPen > 45) score = Math.max(0, score - (solPen - 45));
+  } else if (d.owner) {
+    if (d.owner.state === 'renounced') add('CONTRACT','pass','Ownership renounced','Contract owner is zero-address — no owner functions can ever be called on you.');
+    else if (d.owner.state === 'owned') { bump(15); add('CONTRACT','warn','Owner still active','Owner: <code>' + short(d.owner.owner) + '</code>. The owner can still call privileged functions (blacklists, taxes, pauses) after you buy.'); }
+    else add('CONTRACT','info','No owner function','Contract has no standard owner() — either renounced by design or non-standard.');
+  }
+  // EVM mint simulation (all chains — direct on-chain evidence)
+  if (d.chainKey !== 'sol') {
+    if (d.mint === 'owner') { bump(30); add('CONTRACT','fail','Owner CAN mint new supply','Simulated mint() from the owner address <b>succeeded on-chain</b>. The owner can dilute your bag toward zero at any time after you buy.'); }
+    else if (d.mint === 'anyone') { bump(40); add('CONTRACT','fail','ANYONE can mint','Simulated mint() from an unprivileged address <b>succeeded on-chain</b>. Supply is unchecked — infinite dilution risk.'); }
+    else if (d.mint === false) add('CONTRACT','pass','No reachable mint() path','Simulated mint() calls revert — no standard mint function is callable by the addresses tested. (Exotic signatures can still hide.)');
+  }
+
+  // ============ LIQUIDITY ============
+  // deep chains: honeypot.is reports the main pair incl. liquidity + creation time;
+  // dexscreener may only index side pools for quote-style tokens
+  const hpPair = d.hp && d.hp.pair;
+  const dexLiq = (d.dex && d.dex.liquidity && typeof d.dex.liquidity.usd === 'number')
+    ? d.dex.liquidity.usd : null;
+  let liqUsd = (hpPair && typeof hpPair.liquidity === 'number')
+    ? hpPair.liquidity : dexLiq;
+  // pool indexed but no rated liquidity → treat as zero
+  if (liqUsd == null && d.dex) liqUsd = 0;
+  const createdAt = (hpPair && hpPair.createdAtTimestamp)
+    ? Number(hpPair.createdAtTimestamp) * 1000
+    : (d.dex ? d.dex.pairCreatedAt : null);
+
+  if (liqUsd != null) {
+    if (liqUsd < 5000) { bump(25); add('LIQUIDITY','fail','Liquidity ' + fmtUsd(liqUsd),'Almost no liquidity — exiting any position will crash the price, if you can exit at all.'); }
+    else if (liqUsd < 50000) { bump(10); add('LIQUIDITY','warn','Liquidity ' + fmtUsd(liqUsd),'Thin liquidity. Slippage will hurt on entry and exit.'); }
+    else add('LIQUIDITY','pass','Liquidity ' + fmtUsd(liqUsd),'Deep liquidity pool.');
+  }
+  if (createdAt) {
+    const ageDays = (Date.now() - createdAt) / 86400000;
+    if (ageDays < 1) { bump(22); add('LIQUIDITY','fail','Pool ' + fmtAge(createdAt) + ' old','Brand new pool. Most rugs happen in the first 24 hours.'); }
+    else if (ageDays < 7) { bump(10); add('LIQUIDITY','warn','Pool ' + fmtAge(createdAt) + ' old','Young pool — still inside the classic rug window.'); }
+    else add('LIQUIDITY','pass','Pool age ' + fmtAge(createdAt),'Established pool.');
+  }
+  if (!liqUsd && liqUsd !== 0 && !createdAt) {
+    bump(35);
+    add('LIQUIDITY','fail','No DEX pool found','No trading pool exists on this chain for this address. You cannot buy it — or it is so new nothing is indexed yet.');
+  }
+
+  const vol = d.dex && d.dex.volume ? d.dex.volume.h24 : null;
+  if (vol != null) {
+    if (vol < 1000) { bump(8); add('LIQUIDITY','warn','24h volume ' + fmtUsd(vol),'Almost zero trading activity — dead or manipulated pool.'); }
+    else add('LIQUIDITY','pass','24h volume ' + fmtUsd(vol),'Active market.');
+  }
+
+  // honeypot.is own risk read
+  if (d.hp && d.hp.summary && d.hp.summary.risk) {
+    const lvl = d.hp.summary.risk;
+    if (lvl === 'high') bump(20);
+    else if (lvl === 'medium') bump(8);
+  }
+
+  // ============ limited data cap ============
+  // without the deep simulation (or with a failed Solana RPC read) a "clean"
+  // report means less — never stamp it fully clean
+  const limitedData =
+    (d.chainKey !== 'sol' && !d.hp) ||          // standard-tier EVM chain
+    (d.chainKey === 'sol' && !d.sol);           // solana mint data unavailable
+  if (limitedData) {
+    bump(10);
+    add('TRADE','info','Partial scan','No honeypot/tax simulation exists for this chain — mint traps in transfer hooks CANNOT be ruled out here. Treat "clean" as "no evidence found", not "proven safe".');
+  }
+
+  // ============ verdict ============
+  const honeypotted = !!(d.hp && d.hp.honeypotResult && d.hp.honeypotResult.isHoneypot);
+  if (honeypotted) score = Math.max(score, 90);
+  let verdict = score >= 50 ? 'danger' : score >= 25 ? 'caution' : 'safe';
+  // chains without deep simulation can never earn a full clean stamp —
+  // a honeypot there is invisible to any keyless scanner
+  if (verdict === 'safe' && !d.hp && d.chainKey !== 'sol') verdict = 'caution';
+  const label = verdict === 'danger' ? 'CONFIRMED RUG' : verdict === 'caution' ? 'SUSPICIOUS' : 'WOLF CLEARS IT';
+
+  return {checks, score, verdict, label};
+}
+
+// ---------- render ----------
+function renderReport(data, rep) {
+  const d = data;
+  const dex = d.dex;
+  const name = (d.hp && d.hp.token && d.hp.token.name) || (dex && dex.baseToken && dex.baseToken.name) || 'Unknown token';
+  const sym  = (d.hp && d.hp.token && d.hp.token.symbol) || (dex && dex.baseToken && dex.baseToken.symbol) || '?';
+  const price = dex && dex.priceUsd ? (+dex.priceUsd) : null;
+  const hpPair2 = d.hp && d.hp.pair;
+  let liq = (hpPair2 && typeof hpPair2.liquidity === 'number') ? hpPair2.liquidity
+          : (dex && dex.liquidity && typeof dex.liquidity.usd === 'number' ? dex.liquidity.usd : null);
+  if (liq == null && dex) liq = 0;
+  const vol = dex && dex.volume ? dex.volume.h24 : null;
+  const mcap = dex ? (dex.marketCap || dex.fdv) : null;
+  const ageMs = (hpPair2 && hpPair2.createdAtTimestamp) ? Number(hpPair2.createdAtTimestamp) * 1000
+             : (dex ? dex.pairCreatedAt : null);
+  const age = ageMs ? fmtAge(ageMs) : '—';
+  const img = dex && dex.info && dex.info.imageUrl ? '<img src="' + esc(dex.info.imageUrl) + '" alt="" onerror="this.outerHTML=\'<div class=noimg>🐺</div>\'">' : '<div class="noimg">🐺</div>';
+  const explorer = d.chainKey === 'sol'
+    ? 'https://solscan.io/token/' + d.addr
+    : 'https://dexscreener.com/' + CHAINS[d.chainKey].dex + '/' + d.addr;
+  const note = rep.verdict === 'safe'
+    ? 'clean scan. still — never apе the rent money.'
+    : rep.verdict === 'caution'
+    ? 'something doesn\u2019t smell right. small size only, watch it close.'
+    : 'I\u2019ve seen a hundred of these. they all end the same way.';
+
+  const groups = {};
+  rep.checks.forEach(c => { (groups[c.group] = groups[c.group] || []).push(c); });
+  const order = ['TRADE','CONTRACT','LIQUIDITY','HOLDERS'];
+  const badge = {pass:'PASS', warn:'WARN', fail:'FAIL', info:'INFO'};
+
+  const checksHtml = order.filter(g => groups[g]).map(g =>
+    '<div class="ck-group"><h3>// ' + g + '</h3>' +
+    groups[g].map(c =>
+      '<div class="ck ' + c.status + '"><span class="badge">' + badge[c.status] + '</span>' +
+      '<div class="body"><div class="t">' + c.title + '</div><div class="d">' + c.desc + '</div></div></div>'
+    ).join('') + '</div>'
+  ).join('');
+
+  const vColor = rep.verdict==='safe' ? 'var(--green)' : rep.verdict==='caution' ? 'var(--amber)' : 'var(--red)';
+
+  $('report').innerHTML =
+  '<div class="rep-card">' +
+    '<div class="rep-head">' + img +
+      '<div class="rep-id"><div class="exh">// SCAN REPORT — ' + CHAINS[d.chainKey].name.toUpperCase() + '</div>' +
+      '<h2>' + esc(name) + ' <span>$' + esc(sym) + '</span></h2>' +
+      '<div class="sub">' + short(d.addr) + ' · <a href="' + explorer + '" target="_blank" rel="noopener">open on dexscreener ↗</a></div></div>' +
+      '<div class="verdict ' + rep.verdict + '"><small>WOLF VERDICT</small>' + rep.label + '</div>' +
+    '</div>' +
+    '<div class="sysnote">🐺 <b>WOLF:</b> ' + note + '</div>' +
+    '<div class="threat"><span class="lbl">THREAT INDEX</span><span class="num" style="color:' + vColor + '">' + rep.score + '<span style="font-size:12px;color:var(--muted)">/100</span></span>' +
+      '<div class="risk-track"><div class="risk-fill ' + rep.verdict + '" id="riskFill"></div></div></div>' +
+    '<div class="stats">' +
+      stat('PRICE', price != null ? '$' + (price < 0.0001 && price > 0 ? price.toExponential(2) : price.toPrecision(4)) : '—') +
+      stat('LIQUIDITY', liq != null ? fmtUsd(liq) : '—') +
+      stat('24H VOLUME', vol != null ? fmtUsd(vol) : '—') +
+      stat('MARKET CAP', mcap != null ? fmtUsd(mcap) : '—') +
+      stat('POOL AGE', age) +
+    '</div>' +
+    '<div class="checks">' + checksHtml + '</div>' +
+    '<div class="acts">' +
+      '<button class="act-btn primary" onclick="copyReport()">📋 COPY REPORT FOR X</button>' +
+      '<button class="act-btn" onclick="shareLink()">🔗 SHARE SCAN</button>' +
+      '<button class="act-btn" onclick="resetScan()">🐺 SCAN ANOTHER</button>' +
+    '</div>' +
+    '<div class="note">RUGCHECK is a free open-source scanner — not financial advice. A clean scan lowers risk, it does not eliminate it. Only apе what you can afford to lose.</div>' +
+  '</div>';
+
+  $('report').style.display = 'block';
+  requestAnimationFrame(() => {
+    const f = $('riskFill');
+    if (f) f.style.width = Math.max(3, rep.score) + '%';
+  });
+  $('report').scrollIntoView({behavior:'smooth', block:'start'});
+  coreState(rep.verdict);
+}
+function stat(k, v) { return '<div class="stat"><div class="k">' + k + '</div><div class="v">' + v + '</div></div>'; }
+function esc(s) { return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+function copyReport() {
+  if (!lastReport) return;
+  const r = lastReport;
+  const d = r.data;
+  const sym = (d.hp && d.hp.token && d.hp.token.symbol) || (d.dex && d.dex.baseToken && d.dex.baseToken.symbol) || '?';
+  const vEmoji = r.rep.verdict === 'safe' ? '✅' : r.rep.verdict === 'caution' ? '⚠️' : '🚨';
+  const hpP = d.hp && d.hp.pair;
+  const liq = (hpP && typeof hpP.liquidity === 'number') ? fmtUsd(hpP.liquidity)
+            : (d.dex && d.dex.liquidity ? fmtUsd(d.dex.liquidity.usd) : 'none found');
+  const ageMs = (hpP && hpP.createdAtTimestamp) ? Number(hpP.createdAtTimestamp) * 1000
+              : (d.dex ? d.dex.pairCreatedAt : null);
+  const age = ageMs ? fmtAge(ageMs) : '—';
+  const lines = [
+    '🐺 RUGCHECK — $' + sym + ' (' + CHAINS[d.chainKey].name + ')',
+    'VERDICT: ' + r.rep.label + ' ' + vEmoji + ' — threat index ' + r.rep.score + '/100',
+    '• Liquidity: ' + liq,
+    '• Pool age: ' + age,
+    ...r.rep.checks.filter(c => c.status === 'fail').slice(0,4).map(c => '• ⚠ ' + c.title),
+    r.rep.checks.length === 0 || !r.rep.checks.some(c=>c.status==='fail') ? '• No hard red flags detected' : '',
+    'Scan any token free 👇',
+    location.origin + location.pathname + '#c=' + d.chainKey + '&a=' + d.addr
+  ].filter(Boolean);
+  navigator.clipboard.writeText(lines.join('\n')).then(
+    () => showToast('report copied — paste it on X 🐺'),
+    () => showToast('copy failed', true)
+  );
+}
+function shareLink() {
+  if (!lastReport) return;
+  const url = location.origin + location.pathname + '#c=' + lastReport.data.chainKey + '&a=' + lastReport.data.addr;
+  navigator.clipboard.writeText(url).then(
+    () => showToast('scan link copied'),
+    () => showToast('copy failed', true)
+  );
+}
+function resetScan() {
+  $('report').style.display = 'none';
+  $('report').innerHTML = '';
+  $('term').style.display = 'none';
+  $('termBox').innerHTML = '';
+  $('addr').value = '';
+  $('addr').focus();
+  window.scrollTo({top:0, behavior:'smooth'});
+  coreState('idle');
+}
+
+// ---------- main scan flow ----------
+async function startScan() {
+  const raw = $('addr').value.trim();
+  const err = $('err');
+  err.style.display = 'none';
+  $('report').style.display = 'none';
+
+  if (!raw) { err.textContent = 'paste a token contract address first'; err.style.display='block'; return; }
+  const chainKey = detectChain(raw);
+  if (!chainKey) { err.textContent = 'that does not look like an EVM (0x…) or Solana address'; err.style.display='block'; return; }
+  if (chainKey !== 'sol' && !isEvm(raw)) { err.textContent = 'Solana-style address selected — switch chain to SOLANA'; err.style.display='block'; return; }
+  if (chainKey === 'sol' && !isSol(raw)) { err.textContent = 'that is not a valid Solana mint address'; err.style.display='block'; return; }
+
+  const btn = $('sniffBtn');
+  btn.disabled = true; btn.textContent = 'SNIFFING…';
+  coreState('scan');
+  $('term').style.display = 'block';
+  $('termBox').innerHTML = '';
+  $('term').scrollIntoView({behavior:'smooth', block:'nearest'});
+
+  const data = {chainKey, addr: raw, hp:null, dex:null, owner:null, sol:null, top10:null, mint:null};
+  const address = chainKey === 'sol' ? raw : raw.toLowerCase();
+
+  try {
+    await tline('target locked: <b>' + short(raw) + '</b>');
+    await tline('chain: <b>' + CHAINS[chainKey].name + '</b>', 'ok');
+    await sleep(150);
+
+    // dexscreener (all chains)
+    await tline('pulling liquidity records…');
+    data.dex = await fetchDex(chainKey, address);
+    if (data.dex) {
+      const liq = data.dex.liquidity && data.dex.liquidity.usd;
+      await tline('pool found — liquidity <b>' + fmtUsd(liq) + '</b>', 'ok');
+    } else {
+      await tline('no pool on record ⚠');
+    }
+
+    // chain-specific
+    if (chainKey === 'sol') {
+      await tline('reading mint authority…');
+      data.sol = await solMintInfo(raw);
+      if (data.sol) {
+        await tline('mint authority: ' + (data.sol.mintAuthority ? 'ACTIVE ⚠' : 'renounced ✅'),
+                    data.sol.mintAuthority ? 'warnred' : 'ok');
+        await tline('freeze authority: ' + (data.sol.freezeAuthority ? 'ACTIVE ⚠' : 'none ✅'),
+                    data.sol.freezeAuthority ? 'warnred' : 'ok');
+        await tline('checking top holders…');
+        if (data.sol.supply != null && data.sol.decimals != null) {
+          const totalUi = Number(data.sol.supply) / Math.pow(10, data.sol.decimals);
+          data.top10 = await solTopHolders(raw, totalUi);
+        }
+        await tline(data.top10 != null
+          ? 'top-10 wallets hold <b>' + data.top10.toFixed(1) + '%</b>'
+          : 'witnesses wouldn\u2019t talk (rate limited) — skipped', data.top10 != null ? 'ok' : '');
+      } else {
+        await tline('could not read mint account ⚠', 'warnred');
+      }
+    } else {
+      if (CHAINS[chainKey].hp) {
+        await tline('running honeypot simulation… <b>(this one takes ~10s)</b>');
+        data.hp = await fetchHoneypot(chainKey, address);
+        if (data.hp) {
+          const hp = !!(data.hp.honeypotResult && data.hp.honeypotResult.isHoneypot);
+          const sim = data.hp.simulationResult || {};
+          await tline(hp ? 'HONEYPOT CONFIRMED 🚨' : 'buy + sell simulation: PASSED ✅', hp ? 'warnred' : 'ok');
+          const bt = Number(sim.buyTax), st = Number(sim.sellTax);
+          if (!isNaN(bt) && bt >= 0 && !isNaN(st) && st >= 0)
+            await tline('taxes — buy <b>' + bt + '%</b> / sell <b>' + st + '%</b>', 'ok');
+          if (data.hp.pair && typeof data.hp.pair.liquidity === 'number' && !data.dex)
+            await tline('main pair liquidity <b>' + fmtUsd(data.hp.pair.liquidity) + '</b>', 'ok');
+        } else {
+          await tline('simulation lab closed ⚠ (falling back to owner + records)');
+        }
+      }
+      await tline('reading contract owner…');
+      data.owner = await evmOwnerStatus(chainKey, address);
+      if (data.owner.state === 'renounced') await tline('ownership: RENOUNCED ✅', 'ok');
+      else if (data.owner.state === 'owned') await tline('ownership: still active ⚠', 'warnred');
+      else await tline('no standard owner function');
+
+      // mint simulation — who can print more supply?
+      await tline('trying the mint drawer…');
+      if (data.owner.state === 'owned') {
+        data.mint = await evmMintCheck(chainKey, address, data.owner.owner) ? 'owner' : false;
+      } else {
+        data.mint = await evmMintCheck(chainKey, address, '0x0000000000000000000000000000000000000001') ? 'anyone' : false;
+      }
+      if (data.mint === 'owner') await tline('mint() from OWNER: SUCCEEDS 🚨', 'warnred');
+      else if (data.mint === 'anyone') await tline('mint() from ANYONE: SUCCEEDS 🚨', 'warnred');
+      else await tline('mint() attempts: reverted ✅', 'ok');
+    }
+
+    await tline('compiling report…');
+    await sleep(300);
+    await tline('SCAN COMPLETE. 🐺', 'ok');
+
+    const rep = buildReport(data);
+    lastReport = {data, rep};
+    renderReport(data, rep);
+  } catch (e) {
+    console.error(e);
+    await tline('scanner error: ' + (e && e.message ? e.message : 'unknown'), 'warnred');
+    showToast('scan failed — check your connection and retry', true);
+    coreState('idle');
+  } finally {
+    btn.disabled = false; btn.textContent = 'SNIFF IT';
+  }
+}
+
+// ---------- UI wiring ----------
+document.querySelectorAll('#chainRow .chain-btn').forEach(b => {
+  b.addEventListener('click', () => {
+    document.querySelectorAll('#chainRow .chain-btn').forEach(x => x.classList.remove('sel'));
+    b.classList.add('sel');
+    selectedChain = b.dataset.chain;
+  });
+});
+$('addr').addEventListener('keydown', e => { if (e.key === 'Enter') startScan(); });
+
+// shared-scan links: #c=eth&a=0x…
+(function restoreFromHash() {
+  const h = new URLSearchParams(location.hash.replace(/^#/, ''));
+  const c = h.get('c'), a = h.get('a');
+  if (c && a && CHAINS[c] && (isEvm(a) || isSol(a))) {
+    selectedChain = c;
+    document.querySelectorAll('#chainRow .chain-btn').forEach(x =>
+      x.classList.toggle('sel', x.dataset.chain === c));
+    $('addr').value = a;
+    setTimeout(startScan, 400);
+  }
+})();
+</script>
+
+<script type="importmap">
+{ "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js" } }
+</script>
+<script type="module">
+// ================= RUGCHECK.EXE — 3D core (WOLVER.EXE style) =================
+import * as THREE from 'three';
+
+const canvas = document.getElementById('bg3d');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+
+const scene = new THREE.Scene();
+scene.fog = new THREE.FogExp2(0x04040c, 0.011);
+const camera = new THREE.PerspectiveCamera(62, innerWidth / innerHeight, 0.1, 400);
+camera.position.set(0, 0, 34);
+
+// --- starfield (same recipe as WOLVER.EXE) ---
+{
+  const N = 2200, pos = new Float32Array(N * 3), col = new Float32Array(N * 3);
+  const c = new THREE.Color();
+  for (let i = 0; i < N; i++) {
+    pos[i*3]   = (Math.random() - 0.5) * 220;
+    pos[i*3+1] = (Math.random() - 0.5) * 220;
+    pos[i*3+2] = (Math.random() - 0.5) * 220;
+    c.setHSL(0.55 + Math.random() * 0.2, 0.85, 0.55 + Math.random() * 0.35);
+    col[i*3] = c.r; col[i*3+1] = c.g; col[i*3+2] = c.b;
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  g.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  scene.add(new THREE.Points(g, new THREE.PointsMaterial({ size: 0.5, vertexColors: true, transparent: true, opacity: 0.85 })));
+}
+
+// --- the token core: torus knot (WOLVER.EXE hero family) ---
+const core = new THREE.Group();
+const knot = new THREE.Mesh(
+  new THREE.TorusKnotGeometry(5, 1.4, 220, 24),
+  new THREE.MeshBasicMaterial({ color: 0xffe14d, wireframe: true, transparent: true, opacity: 0.5 })
+);
+core.add(knot);
+const inner = new THREE.Mesh(
+  new THREE.IcosahedronGeometry(2.2, 1),
+  new THREE.MeshBasicMaterial({ color: 0xffb020, wireframe: true, transparent: true, opacity: 0.35 })
+);
+core.add(inner);
+scene.add(core);
+core.position.set(0, 4, -6);
+
+// --- grid floor ---
+const grid = new THREE.GridHelper(400, 90, 0x8a7a2a, 0x1a1608);
+grid.material.transparent = true; grid.material.opacity = 0.16;
+grid.position.y = -22;
+scene.add(grid);
+
+// --- scan-state visuals: core reacts to the engine ---
+let state = 'idle', spin = 1, targetSpin = 1;
+const COLORS = { idle: 0xffe14d, scan: 0xff2ad4, safe: 0x00ff9a, caution: 0xffb020, danger: 0xff3355 };
+window.__coreState = s => { state = s; targetSpin = s === 'scan' ? 7 : 1; };
+
+// --- mouse parallax ---
+let mx = 0, my = 0;
+addEventListener('mousemove', e => {
+  mx = (e.clientX / innerWidth - 0.5) * 2;
+  my = (e.clientY / innerHeight - 0.5) * 2;
+  const dot = document.getElementById('cursor-dot'), ring = document.getElementById('cursor-ring');
+  if (dot) { dot.style.left = e.clientX + 'px'; dot.style.top = e.clientY + 'px'; }
+  if (ring) { ring.style.left = e.clientX + 'px'; ring.style.top = e.clientY + 'px'; }
+});
+document.querySelectorAll('button, a, input, .don').forEach(el => {
+  el.addEventListener('mouseenter', () => document.getElementById('cursor-ring')?.classList.add('hot'));
+  el.addEventListener('mouseleave', () => document.getElementById('cursor-ring')?.classList.remove('hot'));
+});
+
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+const clock = new THREE.Clock();
+function loop() {
+  requestAnimationFrame(loop);
+  const t = clock.getElapsedTime();
+  spin += (targetSpin - spin) * 0.05;
+
+  knot.rotation.y = t * 0.12 * spin;
+  knot.rotation.x = t * 0.07 * spin;
+  inner.rotation.y = -t * 0.5 * spin;
+  inner.rotation.z = t * 0.3 * spin;
+
+  // color transitions
+  const want = new THREE.Color(COLORS[state] || COLORS.idle);
+  knot.material.color.lerp(want, 0.04);
+  if (state === 'scan') inner.material.color.lerp(new THREE.Color(0xffe14d), 0.04);
+  else inner.material.color.lerp(new THREE.Color(0xffb020), 0.04);
+
+  // pulse while scanning
+  const s = state === 'scan' ? 1 + Math.sin(t * 6) * 0.08 : 1;
+  core.scale.setScalar(s);
+
+  // camera: parallax + gentle drift with scroll
+  camera.position.x += (mx * 2.4 - camera.position.x) * 0.04;
+  camera.position.y += (-my * 1.6 - scrollY * 0.004 - camera.position.y) * 0.04;
+  camera.lookAt(camera.position.x * 0.4, camera.position.y, 0);
+
+  renderer.render(scene, camera);
+}
+loop();
+
+// --- boot sequence ---
+const bootEl = document.getElementById('boot');
+const bootInner = document.getElementById('boot-inner');
+const bootLines = [
+  '> RUGCHECK v1.0 — wolf core',
+  '> loading scanner.renderer ....... OK',
+  '> honeypot.simulator ............. READY',
+  '> mint.forensics ................. READY',
+  '> chains: 8 loaded ............... OK',
+  '> the wolf is awake. 🐺'
+];
+let bootDone = false;
+function finishBoot() {
+  if (bootDone) return; bootDone = true;
+  bootEl.classList.add('done');
+}
+bootEl.addEventListener('click', finishBoot);
+(async () => {
+  for (const line of bootLines) {
+    if (bootDone) break;
+    const div = document.createElement('div');
+    div.innerHTML = line.replace(/OK|READY|AWAKE/gi, m => '<span style="color:#fff7c0">' + m + '</span>');
+    bootInner.appendChild(div);
+    await new Promise(r => setTimeout(r, 170));
+  }
+  const cur = document.createElement('span');
+  cur.className = 'cursor-blink';
+  bootInner.appendChild(cur);
+  setTimeout(finishBoot, 550);
+})();
+</script>
+</body>
+</html>
