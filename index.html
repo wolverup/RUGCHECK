@@ -565,8 +565,19 @@ function buildReport(data) {
 
   // ============ TRADE ============
   if (d.hp) {
+    // sell-failure stats from real holder history — separates a full honeypot
+    // (nobody can sell) from partial wallet blocking (only some wallets can't)
+    const ha = d.hp.holderAnalysis;
+    let failRate = null;
+    if (ha && Number(ha.holders) > 0) failRate = Number(ha.failed) / Number(ha.holders);
+
     const honeypot = !!(d.hp.honeypotResult && d.hp.honeypotResult.isHoneypot);
-    if (honeypot) {
+    if (honeypot && failRate != null && failRate <= 0.25) {
+      bump(35);
+      add('TRADE','fail','Partial sell blocking detected',
+        'Sell simulation failed — BUT on-chain history shows <b>' + ha.successful + ' of ' + ha.holders +
+        '</b> recent holders sold successfully (' + Math.round(failRate*100) + '% blocked). The contract blocks <b>selected wallets</b> (blacklist / transfer rule), not everyone. If your wallet gets flagged, you cannot exit — size accordingly.');
+    } else if (honeypot) {
       bump(60);
       add('TRADE','fail','Honeypot detected','Buy simulation succeeded but <b>SELL failed</b>. You can buy in — you can never get out. This is a 100% rug signature.');
     } else {
@@ -588,12 +599,14 @@ function buildReport(data) {
     }
     if (!isNaN(xTax) && xTax > 10) { bump(10); add('TRADE','warn','Transfer tax '+xTax+'%','Moving the token between wallets costs '+xTax+'%.'); }
 
-    // tax flags are already scored above — don't double-count them
+    // tax flags are already scored above — don't double-count them;
+    // low_fail_rate is already covered by the partial-blocking check
     const flags = (d.hp.summary && Array.isArray(d.hp.summary.flags) ? d.hp.summary.flags : []);
     flags.forEach(f => {
-      const fs = String(f);
-      if (/tax/i.test(fs)) return;
-      bump(8); add('TRADE','warn','Scanner flag', esc(fs));
+      const key = typeof f === 'string' ? f : (f && f.flag) || '';
+      const desc = typeof f === 'string' ? '' : (f && f.description) || '';
+      if (/tax/i.test(key) || key === 'low_fail_rate') return;
+      bump(8); add('TRADE','warn','Scanner flag: ' + esc(key), esc(desc) || esc(key));
     });
 
     const code = d.hp.contractCode || {};
@@ -654,13 +667,14 @@ function buildReport(data) {
   }
 
   // ============ LIQUIDITY ============
-  // deep chains: honeypot.is reports the main pair incl. liquidity + creation time;
-  // dexscreener may only index side pools for quote-style tokens
+  // deepest pool wins: honeypot.is reports its simulation pair, dexscreener
+  // the top-indexed pair — exit liquidity is what actually matters
   const hpPair = d.hp && d.hp.pair;
   const dexLiq = (d.dex && d.dex.liquidity && typeof d.dex.liquidity.usd === 'number')
     ? d.dex.liquidity.usd : null;
-  let liqUsd = (hpPair && typeof hpPair.liquidity === 'number')
-    ? hpPair.liquidity : dexLiq;
+  const hpLiq = (hpPair && typeof hpPair.liquidity === 'number') ? hpPair.liquidity : null;
+  let liqUsd = (hpLiq != null && dexLiq != null) ? Math.max(hpLiq, dexLiq)
+             : (hpLiq != null ? hpLiq : dexLiq);
   // pool indexed but no rated liquidity → treat as zero
   if (liqUsd == null && d.dex) liqUsd = 0;
   const createdAt = (hpPair && hpPair.createdAtTimestamp)
@@ -707,14 +721,25 @@ function buildReport(data) {
     add('TRADE','info','Partial scan','No honeypot/tax simulation exists for this chain — mint traps in transfer hooks CANNOT be ruled out here. Treat "clean" as "no evidence found", not "proven safe".');
   }
 
+  if (d.notFound) {
+    add('TRADE','info','Not found on ' + (d.chainKey && CHAINS[d.chainKey].name || 'this chain'),'No pools and no simulation data exist for this address here. If the token lives on another chain, switch and rescan — this report is about a ghost.');
+  }
+
   // ============ verdict ============
-  const honeypotted = !!(d.hp && d.hp.honeypotResult && d.hp.honeypotResult.isHoneypot);
+  // full honeypot (most wallets can't sell) floors at 90; partial wallet
+  // blocking is scored by its checks like everything else
+  const ha2 = d.hp && d.hp.holderAnalysis;
+  const failRate2 = (ha2 && Number(ha2.holders) > 0) ? Number(ha2.failed) / Number(ha2.holders) : null;
+  const honeypotted = !!(d.hp && d.hp.honeypotResult && d.hp.honeypotResult.isHoneypot) &&
+                      !(failRate2 != null && failRate2 <= 0.25);
   if (honeypotted) score = Math.max(score, 90);
   let verdict = score >= 50 ? 'danger' : score >= 25 ? 'caution' : 'safe';
   // chains without deep simulation can never earn a full clean stamp —
   // a honeypot there is invisible to any keyless scanner
   if (verdict === 'safe' && !d.hp && d.chainKey !== 'sol') verdict = 'caution';
-  const label = verdict === 'danger' ? 'CONFIRMED RUG' : verdict === 'caution' ? 'SUSPICIOUS' : 'WOLF CLEARS IT';
+  const label = verdict === 'danger'
+    ? ((honeypotted || score >= 70) ? 'CONFIRMED RUG' : 'DANGEROUS')
+    : verdict === 'caution' ? 'SUSPICIOUS' : 'WOLF CLEARS IT';
 
   return {checks, score, verdict, label};
 }
@@ -727,8 +752,10 @@ function renderReport(data, rep) {
   const sym  = (d.hp && d.hp.token && d.hp.token.symbol) || (dex && dex.baseToken && dex.baseToken.symbol) || '?';
   const price = dex && dex.priceUsd ? (+dex.priceUsd) : null;
   const hpPair2 = d.hp && d.hp.pair;
-  let liq = (hpPair2 && typeof hpPair2.liquidity === 'number') ? hpPair2.liquidity
-          : (dex && dex.liquidity && typeof dex.liquidity.usd === 'number' ? dex.liquidity.usd : null);
+  const hpLiq2 = (hpPair2 && typeof hpPair2.liquidity === 'number') ? hpPair2.liquidity : null;
+  const dexLiq2 = (dex && dex.liquidity && typeof dex.liquidity.usd === 'number') ? dex.liquidity.usd : null;
+  let liq = (hpLiq2 != null && dexLiq2 != null) ? Math.max(hpLiq2, dexLiq2)
+          : (hpLiq2 != null ? hpLiq2 : dexLiq2);
   if (liq == null && dex) liq = 0;
   const vol = dex && dex.volume ? dex.volume.h24 : null;
   const mcap = dex ? (dex.marketCap || dex.fdv) : null;
@@ -805,8 +832,10 @@ function copyReport() {
   const sym = (d.hp && d.hp.token && d.hp.token.symbol) || (d.dex && d.dex.baseToken && d.dex.baseToken.symbol) || '?';
   const vEmoji = r.rep.verdict === 'safe' ? '✅' : r.rep.verdict === 'caution' ? '⚠️' : '🚨';
   const hpP = d.hp && d.hp.pair;
-  const liq = (hpP && typeof hpP.liquidity === 'number') ? fmtUsd(hpP.liquidity)
-            : (d.dex && d.dex.liquidity ? fmtUsd(d.dex.liquidity.usd) : 'none found');
+  const hpLiq3 = (hpP && typeof hpP.liquidity === 'number') ? hpP.liquidity : null;
+  const dexLiq3 = (d.dex && d.dex.liquidity && typeof d.dex.liquidity.usd === 'number') ? d.dex.liquidity.usd : null;
+  const liq = (hpLiq3 != null && dexLiq3 != null) ? fmtUsd(Math.max(hpLiq3, dexLiq3))
+            : (hpLiq3 != null ? fmtUsd(hpLiq3) : (dexLiq3 != null ? fmtUsd(dexLiq3) : 'none found'));
   const ageMs = (hpP && hpP.createdAtTimestamp) ? Number(hpP.createdAtTimestamp) * 1000
               : (d.dex ? d.dex.pairCreatedAt : null);
   const age = ageMs ? fmtAge(ageMs) : '—';
@@ -909,7 +938,14 @@ async function startScan() {
         if (data.hp) {
           const hp = !!(data.hp.honeypotResult && data.hp.honeypotResult.isHoneypot);
           const sim = data.hp.simulationResult || {};
-          await tline(hp ? 'HONEYPOT CONFIRMED 🚨' : 'buy + sell simulation: PASSED ✅', hp ? 'warnred' : 'ok');
+          const haT = data.hp.holderAnalysis;
+          const frT = (haT && Number(haT.holders) > 0) ? Number(haT.failed) / Number(haT.holders) : null;
+          if (hp && frT != null && frT <= 0.25)
+            await tline('SELL BLOCKED for ' + Math.round(frT*100) + '% of wallets 🚨 (partial blacklist)', 'warnred');
+          else if (hp)
+            await tline('HONEYPOT CONFIRMED 🚨', 'warnred');
+          else
+            await tline('buy + sell simulation: PASSED ✅', 'ok');
           const bt = Number(sim.buyTax), st = Number(sim.sellTax);
           if (!isNaN(bt) && bt >= 0 && !isNaN(st) && st >= 0)
             await tline('taxes — buy <b>' + bt + '%</b> / sell <b>' + st + '%</b>', 'ok');
@@ -918,6 +954,10 @@ async function startScan() {
         } else {
           await tline('simulation lab closed ⚠ (falling back to owner + records)');
         }
+      }
+      if (!data.dex && !data.hp) {
+        await tline('⚠ nothing found on ' + CHAINS[chainKey].name + ' — wrong chain? try BASE / BSC / ARB…');
+        data.notFound = true;
       }
       await tline('reading contract owner…');
       data.owner = await evmOwnerStatus(chainKey, address);
